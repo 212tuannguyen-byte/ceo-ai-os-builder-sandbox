@@ -1,0 +1,42 @@
+name: UT1.8-C Independent Publisher PR CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  independent-ci:
+    if: startsWith(github.head_ref, 'builder/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout proposed Builder branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Publisher identity and safe artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PR actor: ${{ github.event.pull_request.user.login }}"
+          test "${{ github.event.pull_request.user.login }}" = "ceo-publisher[bot]"
+          test "${GITHUB_HEAD_REF#builder/}" != "$GITHUB_HEAD_REF"
+
+          git fetch origin main --depth=1
+          mapfile -t changed < <(git diff --name-only origin/main...HEAD)
+          printf 'changed=%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "publisher-evidence.txt"
+
+          test -f publisher-evidence.txt
+          grep -q '^UT1.8-C Publisher Remote Acceptance$' publisher-evidence.txt
+          grep -q '^merge=false$' publisher-evidence.txt
+          grep -q '^deploy=false$' publisher-evidence.txt
+
+      - name: Independent CI passed
+        run: echo "Publisher-created PR passed independent read-only CI."
