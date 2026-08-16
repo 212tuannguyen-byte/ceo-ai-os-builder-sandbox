@@ -2,6 +2,11 @@ name: UT1.8-C Publisher Remote Eval
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .phase-a-remote-eval-trigger
 
 permissions:
   contents: read
