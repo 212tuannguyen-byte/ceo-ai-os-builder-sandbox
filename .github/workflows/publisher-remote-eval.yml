@@ -77,28 +77,14 @@ jobs:
             -f ref="refs/heads/$branch" \
             -f sha="$base_sha" >/tmp/ref.json
 
-          evidence="UT1.8-C Publisher Remote Acceptance
-run_id=${GITHUB_RUN_ID}
-base_sha=${base_sha}
-merge=false
-deploy=false
-"
+          evidence="$(printf 'UT1.8-C Publisher Remote Acceptance\nrun_id=%s\nbase_sha=%s\nmerge=false\ndeploy=false\n' "$GITHUB_RUN_ID" "$base_sha")"
           encoded="$(printf '%s' "$evidence" | base64 -w 0)"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/publisher-evidence.txt" \
             -f message='publisher: remote acceptance artifact' \
             -f content="$encoded" \
             -f branch="$branch" >/tmp/content.json
 
-          body="Build Task: CP-UT1.8-001 Phase A remote acceptance
-Base SHA: $base_sha
-Publisher: ceo-publisher GitHub App
-Scope: publisher-evidence.txt only
-Architecture changes: none
-Permission changes: none
-Production deployment: false
-Merge: forbidden
-Governor review: pending
-CEO merge approval: pending"
+          body="$(printf 'Build Task: CP-UT1.8-001 Phase A remote acceptance\nBase SHA: %s\nPublisher: ceo-publisher GitHub App\nScope: publisher-evidence.txt only\nArchitecture changes: none\nPermission changes: none\nProduction deployment: false\nMerge: forbidden\nGovernor review: pending\nCEO merge approval: pending\n' "$base_sha")"
 
           pr_json="$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls" \
             -f title='UT1.8-C Publisher remote acceptance' \
