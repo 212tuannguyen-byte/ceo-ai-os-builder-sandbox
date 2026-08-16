@@ -1,0 +1,146 @@
+name: UT1.8-C Publisher Remote Eval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  remote-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint minimum-scope Publisher token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.BUILDER_PUBLISHER_APP_ID }}
+          private-key: ${{ secrets.BUILDER_PUBLISHER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ceo-ai-os-builder-sandbox
+          permission-contents: write
+          permission-pull-requests: write
+          skip-token-revoke: true
+
+      - name: Verify installation scope
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "app_slug=${{ steps.app-token.outputs.app-slug }}"
+          echo "installation_id=${{ steps.app-token.outputs.installation-id }}"
+          count="$(gh api installation/repositories --jq '.repositories | length')"
+          repo="$(gh api installation/repositories --jq '.repositories[0].full_name')"
+          test "$count" -eq 1
+          test "$repo" = "$GITHUB_REPOSITORY"
+
+      - name: Prove default branch write is blocked
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          content="$(printf 'this write must be blocked\n' | base64 -w 0)"
+          body="$(jq -nc --arg message 'publisher must not write main' --arg content "$content" --arg branch main '{message:$message,content:$content,branch:$branch}')"
+          code="$(curl -sS -o /tmp/main-write.json -w '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer $APP_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/publisher-main-should-block.txt" \
+            -d "$body")"
+          cat /tmp/main-write.json
+          case "$code" in
+            403|409|422) echo "main write correctly blocked: HTTP $code" ;;
+            *) echo "unexpected main-write result: HTTP $code"; exit 1 ;;
+          esac
+
+      - name: Publish validated Builder branch and draft PR
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          branch="builder/phase-a-remote-${GITHUB_RUN_ID}"
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/heads/$branch" \
+            -f sha="$base_sha" >/tmp/ref.json
+
+          evidence="UT1.8-C Publisher Remote Acceptance
+run_id=${GITHUB_RUN_ID}
+base_sha=${base_sha}
+merge=false
+deploy=false
+"
+          encoded="$(printf '%s' "$evidence" | base64 -w 0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/publisher-evidence.txt" \
+            -f message='publisher: remote acceptance artifact' \
+            -f content="$encoded" \
+            -f branch="$branch" >/tmp/content.json
+
+          body="Build Task: CP-UT1.8-001 Phase A remote acceptance
+Base SHA: $base_sha
+Publisher: ceo-publisher GitHub App
+Scope: publisher-evidence.txt only
+Architecture changes: none
+Permission changes: none
+Production deployment: false
+Merge: forbidden
+Governor review: pending
+CEO merge approval: pending"
+
+          pr_json="$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls" \
+            -f title='UT1.8-C Publisher remote acceptance' \
+            -f head="$branch" \
+            -f base='main' \
+            -f body="$body" \
+            -F draft=true)"
+
+          pr_number="$(jq -r '.number' <<<"$pr_json")"
+          pr_url="$(jq -r '.html_url' <<<"$pr_json")"
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')"
+
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "PR: $pr_url" >> "$GITHUB_STEP_SUMMARY"
+          echo "Head SHA: $head_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revoke Publisher token and prove write capability disappears
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.publish.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          revoke_code="$(curl -sS -o /tmp/revoke.json -w '%{http_code}' \
+            -X DELETE \
+            -H "Authorization: Bearer $APP_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/installation/token')"
+          test "$revoke_code" = "204"
+
+          content="$(printf 'revoked token must not write\n' | base64 -w 0)"
+          body="$(jq -nc --arg message 'revoked token test' --arg content "$content" --arg branch "$BRANCH" '{message:$message,content:$content,branch:$branch}')"
+          post_code="$(curl -sS -o /tmp/post-revoke.json -w '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer $APP_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/revoked-token-should-not-write.txt" \
+            -d "$body")"
+          cat /tmp/post-revoke.json
+          test "$post_code" = "401"
+          echo "revocation PASS: write capability removed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remote acceptance summary
+        run: |
+          echo "Publisher remote acceptance completed without merge or deploy."
+          echo "Draft PR #${{ steps.publish.outputs.pr_number }}" >> "$GITHUB_STEP_SUMMARY"
